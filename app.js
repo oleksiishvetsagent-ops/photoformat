@@ -27,12 +27,10 @@ function render() {
 }
 function add(files) {
   if (busy) return;
-  let rejected = 0;
   for (const file of files) {
-    if (!/\.(jpe?g|png|webp|avif|gif|bmp)$/i.test(file.name)) { rejected++; continue; }
     items.push({id:++serial, file, preview:URL.createObjectURL(file)});
   }
-  $('files').value = ''; render(); status(rejected ? `Пропущено непідтримуваних файлів: ${rejected}. HEIC та SVG не підтримуються.` : 'Налаштуйте розмір і натисніть «Обробити фотографії»');
+  $('files').value = ''; render(); status('Натисніть «Обробити фотографії». Формати, які браузер не прочитає, отримають окреме повідомлення.');
 }
 $('files').onchange = e => add(e.target.files);
 $('drop').onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && !busy) { e.preventDefault(); $('files').click(); } };
@@ -43,17 +41,35 @@ window.addEventListener('dragover', e => e.preventDefault()); window.addEventLis
 $('clear').onclick = () => { items.forEach(x=>URL.revokeObjectURL(x.preview)); items=[]; $('progress').hidden=true; render(); status('Спочатку додайте фотографії'); };
 function invalidate() { for(const x of items){x.result=null;x.error=null;} $('progress').hidden=true; render(); status(items.length?'Налаштування змінено. Обробіть фото знову.':'Спочатку додайте фотографії'); }
 $('settings').addEventListener('input', invalidate);
-$('preset').onchange = () => { if($('preset').value!=='custom'){const [w,h]=$('preset').value.split(',');$('width').value=w;$('height').value=h;} invalidate(); };
+function syncMode() {
+  const mode=$('mode').value, automatic=mode==='minimum';
+  $('dimensions').hidden=automatic; $('upscale-control').hidden=automatic;
+  $('upscale').disabled=mode==='cover';
+  $('mode-help').textContent={minimum:'Коротша сторона менша за 1200 px — збільшуємо пропорційно. Від 1200 px — розміри без змін.',fit:'Фото поміститься в задані межі. Одна зі сторін може бути меншою.',cover:'Фото заповнить весь розмір. Краї будуть обрізані по центру.',contain:'Фото залишиться цілим. Вільне місце заповниться вибраним кольором.'}[mode];
+}
+$('preset').onchange = () => {
+  const preset=$('preset').value;
+  if(preset==='auto') $('mode').value='minimum';
+  else { if($('mode').value==='minimum') $('mode').value='fit'; if(preset!=='custom'){const [w,h]=preset.split(',');$('width').value=w;$('height').value=h;} }
+  syncMode(); invalidate();
+};
 for(const id of ['width','height']) $(id).addEventListener('input',()=>{$('preset').value='custom';});
 $('quality').addEventListener('input',()=>{$('quality-value').value=`${$('quality').value}%`;});
-$('mode').onchange=()=>{ const mode=$('mode').value; $('mode-help').textContent={fit:'Фото поміститься в задані межі. Одна зі сторін може бути меншою.',cover:'Фото заповнить весь розмір. Краї будуть обрізані по центру.',contain:'Фото залишиться цілим. Вільне місце заповниться вибраним кольором.'}[mode]; $('upscale').disabled=mode==='cover'; invalidate(); };
+$('mode').onchange=()=>{if($('mode').value==='minimum')$('preset').value='auto';else if($('preset').value==='auto')$('preset').value='custom';syncMode();invalidate();};
+function outputGeometry(iw,ih,w,h,mode,upscale) {
+  let scale=mode==='minimum'?Math.max(1,1200/Math.min(iw,ih)):mode==='cover'?Math.max(w/iw,h/ih):Math.min(w/iw,h/ih);
+  if(mode!=='minimum'&&mode!=='cover'&&!upscale)scale=Math.min(1,scale);
+  const proportional=mode==='minimum'||mode==='fit';
+  const width=proportional?Math.max(1,Math.round(iw*scale)):w,height=proportional?Math.max(1,Math.round(ih*scale)):h;
+  return {width,height,dw:proportional?width:iw*scale,dh:proportional?height:ih*scale};
+}
 async function decode(file) {
   if ('createImageBitmap' in window) { try { return await createImageBitmap(file); } catch {} }
   return new Promise((resolve,reject)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);resolve(img);};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Формат не підтримується браузером або файл пошкоджений'));};img.src=url;});
 }
 $('convert').onclick = async () => {
   const w=Number($('width').value),h=Number($('height').value);
-  if(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000){status('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');return;}
+  if($('mode').value!=='minimum'&&(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000)){status('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');return;}
   const mode=$('mode').value,quality=Number($('quality').value)/100,bg=$('background').value,upscale=$('upscale').checked;
   busy=true;items.forEach(x=>{x.result=null;x.error=null;});render();$('progress').hidden=false;$('progress').max=items.length;$('progress').value=0;
   for(let i=0;i<items.length;i++){
@@ -61,11 +77,12 @@ $('convert').onclick = async () => {
     try{
       img=await decode(item.file);const iw=img.naturalWidth||img.width,ih=img.naturalHeight||img.height;
       if(!iw||!ih)throw new Error('Не вдалося прочитати розмір фото');
-      let scale=mode==='cover'?Math.max(w/iw,h/ih):Math.min(w/iw,h/ih);if(mode!=='cover'&&!upscale)scale=Math.min(1,scale);
-      canvas=document.createElement('canvas');canvas.width=mode==='fit'?Math.max(1,Math.round(iw*scale)):w;canvas.height=mode==='fit'?Math.max(1,Math.round(ih*scale)):h;
+      const geometry=outputGeometry(iw,ih,w,h,mode,upscale);
+      if(geometry.width>32767||geometry.height>32767||geometry.width*geometry.height>100000000)throw new Error('Фото завелике для браузера. Розміри не змінено; спробуйте ручний режим.');
+      canvas=document.createElement('canvas');canvas.width=geometry.width;canvas.height=geometry.height;
       const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Недостатньо пам’яті для обробки');
       ctx.fillStyle=bg;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
-      const dw=mode==='fit'?canvas.width:iw*scale,dh=mode==='fit'?canvas.height:ih*scale;
+      const {dw,dh}=geometry;
       ctx.drawImage(img,(canvas.width-dw)/2,(canvas.height-dh)/2,dw,dh);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));if(!blob||blob.type!=='image/jpeg')throw new Error('Не вдалося створити JPG');
       item.result=blob;item.w=canvas.width;item.h=canvas.height;item.name=`${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
