@@ -5,6 +5,8 @@ const size = n => n < 1048576 ? `${Math.round(n / 1024)} КБ` : `${(n / 1048576
 function status(text) { $('status').textContent = text; }
 function controls() {
   $('convert').disabled = busy || !items.length; $('clear').disabled = busy || !items.length;
+  $('zip').hidden = !items.some(x => x.result);
+  $('convert-label').textContent = busy ? 'Обробляємо та готуємо завантаження…' : 'Обробити й завантажити фото';
   $('zip').disabled = busy || !items.some(x => x.result); $('settings').disabled = busy;
   $('files').disabled = busy; $('drop').setAttribute('aria-disabled', String(busy));
 }
@@ -30,7 +32,7 @@ function add(files) {
   for (const file of files) {
     items.push({id:++serial, file, preview:URL.createObjectURL(file)});
   }
-  $('files').value = ''; render(); status('Натисніть «Обробити фотографії». Формати, які браузер не прочитає, отримають окреме повідомлення.');
+  $('files').value = ''; render(); status('Натисніть кнопку — готові JPG завантажаться одним ZIP-архівом.');
 }
 $('files').onchange = e => add(e.target.files);
 $('drop').onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && !busy) { e.preventDefault(); $('files').click(); } };
@@ -68,6 +70,7 @@ async function decode(file) {
   return new Promise((resolve,reject)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);resolve(img);};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Формат не підтримується браузером або файл пошкоджений'));};img.src=url;});
 }
 $('convert').onclick = async () => {
+  if(busy || !items.length) return;
   const w=Number($('width').value),h=Number($('height').value);
   if($('mode').value!=='minimum'&&(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000)){status('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');return;}
   const mode=$('mode').value,quality=Number($('quality').value)/100,bg=$('background').value,upscale=$('upscale').checked;
@@ -85,12 +88,22 @@ $('convert').onclick = async () => {
       const {dw,dh}=geometry;
       ctx.drawImage(img,(canvas.width-dw)/2,(canvas.height-dh)/2,dw,dh);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));if(!blob||blob.type!=='image/jpeg')throw new Error('Не вдалося створити JPG');
-      item.result=blob;item.w=canvas.width;item.h=canvas.height;item.name=`${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
+      item.result=blob;item.w=canvas.width;item.h=canvas.height;item.name=`gotovo_${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
     }catch(error){item.error=error.message||'Не вдалося обробити фото';}
     finally{if(img?.close)img.close();if(canvas){canvas.width=1;canvas.height=1;}}
     $('progress').value=i+1;render();await new Promise(resolve=>setTimeout(resolve,0));
   }
-  busy=false;render();const done=items.filter(x=>x.result).length;status(`Готово: ${done} із ${items.length}. ${done<items.length?'Деякі файли не вдалося обробити.':'Завантажте JPG окремо або всі одним архівом.'}`);
+  const done=items.filter(x=>x.result).length;
+  try {
+    if(done){
+      status('Фото готові. Готуємо ZIP-архів…');
+      const zip=await makeZip(items.filter(x=>x.result));
+      save(zip,'photoformat-jpg.zip');
+      status(`Готово: ${done} із ${items.length}. ZIP передано браузеру для завантаження.${done<items.length?' Деякі файли не вдалося обробити.':''} Якщо завантаження не почалося, натисніть «Завантажити ZIP ще раз».`);
+    } else status('Не вдалося обробити жодного фото. Перевірте повідомлення біля файлів.');
+  } catch(error) { status(`Фото оброблено, але не вдалося завантажити ZIP: ${error.message || 'спробуйте ще раз'}. Можна завантажити JPG окремо.`); }
+  finally {busy=false;render();}
+
 };
 function save(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 // ZIP store format: JPEG is already compressed. UTF-8 filenames, CRC32 and central directory.
@@ -110,3 +123,7 @@ async function makeZip(entries){
   const end=header(22),e=end.view;e.setUint32(0,0x06054b50,true);e.setUint16(8,entries.length,true);e.setUint16(10,entries.length,true);e.setUint32(12,centralLength,true);e.setUint32(16,offset,true);return new Blob([...chunks,...central,end.bytes],{type:'application/zip'});
 }
 $('zip').onclick=async()=>{busy=true;controls();status('Готуємо ZIP-архів…');try{const zip=await makeZip(items.filter(x=>x.result));save(zip,'photoformat-jpg.zip');status('Архів готовий. Завантаження розпочато.');}catch(e){status(e.message||'Не вдалося створити архів. Спробуйте меншу партію.');}finally{busy=false;controls();}};
+
+// Close the settings dropdown when clicking outside or pressing Escape.
+document.addEventListener("click",e=>{const menu=document.querySelector(".settings-menu");if(menu.open&&!menu.contains(e.target))menu.open=false;});
+document.addEventListener("keydown",e=>{const menu=document.querySelector(".settings-menu");if(e.key==="Escape"&&menu.open){menu.open=false;menu.querySelector("summary").focus();}});
