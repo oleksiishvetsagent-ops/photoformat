@@ -74,7 +74,7 @@ $('convert').onclick = async () => {
   const w=Number($('width').value),h=Number($('height').value);
   if($('mode').value!=='minimum'&&(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000)){status('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');return;}
   const mode=$('mode').value,quality=Number($('quality').value)/100,bg=$('background').value,upscale=$('upscale').checked;
-  const brightness=Number($('brightness').value),contrast=Number($('contrast').value),protectHighlights=$('protect-highlights').checked;
+  const brightness=Number($('brightness').value),contrast=Number($('contrast').value),protectHighlights=Number($('protect-highlights').value)/100;
   busy=true;items.forEach(x=>{x.result=null;x.error=null;});render();$('progress').hidden=false;$('progress').max=items.length;$('progress').value=0;
   for(let i=0;i<items.length;i++){
     const item=items[i];let img,canvas;status(`Обробка ${i+1} із ${items.length}: ${item.file.name}`);
@@ -131,17 +131,18 @@ document.addEventListener("click",e=>{const menu=document.querySelector(".settin
 document.addEventListener("keydown",e=>{const menu=document.querySelector(".settings-menu");if(e.key==="Escape"&&menu.open){menu.open=false;menu.querySelector("summary").focus();}});
 
 // Use the same pixel transform for the preview and the exported JPG.
-function adjustPixels(data,brightness,contrast,protectHighlights=false) {
+function adjustPixels(data,brightness,contrast,protectHighlights=0) {
   const gain=1+brightness/100, factor=1+contrast/100;
   for(let i=0;i<data.length;i+=4) {
     // Smoothly taper positive brightness using the brightest channel.
-    // One gain for all channels preserves their ratios and avoids channel clipping.
+    // Blend regular brightness with full protection; use one gain for all channels.
     const peak=Math.max(data[i],data[i+1],data[i+2])/255;
-    const pixelGain=protectHighlights&&brightness>0 ? 1+(brightness/100)*(1-peak)**2 : gain;
+    const strength=Math.max(0,Math.min(1,Number(protectHighlights)||0));
+    const pixelGain=brightness>0 ? 1+(brightness/100)*((1-strength)+strength*(1-peak)**2) : gain;
     for(let c=0;c<3;c++) data[i+c]=Math.max(0,Math.min(255,(data[i+c]*pixelGain-128)*factor+128));
   }
 }
-function applyTone(ctx,w,h,brightness,contrast,protectHighlights=false) {
+function applyTone(ctx,w,h,brightness,contrast,protectHighlights=0) {
   if(!brightness&&!contrast)return;
   // Process strips to avoid a second full-size image allocation.
   for(let y=0;y<h;y+=128){const height=Math.min(128,h-y),pixels=ctx.getImageData(0,y,w,height);adjustPixels(pixels.data,brightness,contrast,protectHighlights);ctx.putImageData(pixels,0,y);}
@@ -177,11 +178,12 @@ async function updatePreview(version) {
       const canvas=$(id);canvas.width=Math.max(1,Math.round(g.width*scale));canvas.height=Math.max(1,Math.round(g.height*scale));
       const ctx=canvas.getContext('2d');ctx.fillStyle=$('background').value;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingQuality='high';
       ctx.drawImage(previewImage,(g.width-g.dw)*scale/2,(g.height-g.dh)*scale/2,g.dw*scale,g.dh*scale);
-      if(id==='preview-after')applyTone(ctx,canvas.width,canvas.height,Number($('brightness').value),Number($('contrast').value),$('protect-highlights').checked);canvas.hidden=false;
+      if(id==='preview-after')applyTone(ctx,canvas.width,canvas.height,Number($('brightness').value),Number($('contrast').value),Number($('protect-highlights').value)/100);canvas.hidden=false;
     }
     $('preview-status').textContent=`Результат: ${g.width} × ${g.height} px. Корекція застосовується до всієї партії.`;
   }catch(error){if(version===previewVersion){$('preview-before').hidden=true;$('preview-after').hidden=true;$('preview-status').textContent=error.message||'Прев’ю недоступне для цього файлу.';}}
 }
 for(const id of ['brightness','contrast'])$(id).addEventListener('input',()=>{$(id+'-value').value=(Number($(id).value)>0?'+':'')+$(id).value;});
 $('preview-file').addEventListener('change',schedulePreview);
-$('reset-tone').onclick=()=>{for(const id of ['brightness','contrast']){$(id).value=0;$(id+'-value').value='0';}invalidate();};
+$('protect-highlights').addEventListener('input',()=>{$('protect-highlights-value').value=$('protect-highlights').value+'%';});
+$('reset-tone').onclick=()=>{$('protect-highlights').value=50;$('protect-highlights-value').value='50%';for(const id of ['brightness','contrast']){$(id).value=0;$(id+'-value').value='0';}invalidate();};
