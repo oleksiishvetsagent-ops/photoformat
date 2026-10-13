@@ -25,7 +25,7 @@ function render() {
     const remove = document.createElement('button'); remove.textContent = '×'; remove.disabled = busy; remove.setAttribute('aria-label', `Видалити ${item.file.name}`); remove.onclick = () => { URL.revokeObjectURL(item.preview); items = items.filter(x => x !== item); render(); }; row.append(remove); queue.append(row);
   }
   $('count').textContent = `Фотографій: ${items.length}`;
-  $('total').textContent = items.length ? `${size(items.reduce((s,x) => s+x.file.size,0))} · готово ${items.filter(x=>x.result).length}` : 'Готові до нової партії'; controls();
+  $('total').textContent = items.length ? `${size(items.reduce((s,x) => s+x.file.size,0))} · готово ${items.filter(x=>x.result).length}` : 'Готові до нової партії'; controls(); syncPreviewFiles();
 }
 function add(files) {
   if (busy) return;
@@ -42,7 +42,7 @@ $('drop').addEventListener('drop',e=>add(e.dataTransfer.files));
 window.addEventListener('dragover', e => e.preventDefault()); window.addEventListener('drop', e => e.preventDefault());
 $('clear').onclick = () => { items.forEach(x=>URL.revokeObjectURL(x.preview)); items=[]; $('progress').hidden=true; render(); status('Спочатку додайте фотографії'); };
 function invalidate() { for(const x of items){x.result=null;x.error=null;} $('progress').hidden=true; render(); status(items.length?'Налаштування змінено. Обробіть фото знову.':'Спочатку додайте фотографії'); }
-$('settings').addEventListener('input', invalidate);
+$('settings').addEventListener('input', e => { if(e.target.id !== 'preview-file') invalidate(); });
 function syncMode() {
   const mode=$('mode').value, automatic=mode==='minimum';
   $('dimensions').hidden=automatic; $('upscale-control').hidden=automatic;
@@ -74,6 +74,7 @@ $('convert').onclick = async () => {
   const w=Number($('width').value),h=Number($('height').value);
   if($('mode').value!=='minimum'&&(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000)){status('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');return;}
   const mode=$('mode').value,quality=Number($('quality').value)/100,bg=$('background').value,upscale=$('upscale').checked;
+  const brightness=Number($('brightness').value),contrast=Number($('contrast').value);
   busy=true;items.forEach(x=>{x.result=null;x.error=null;});render();$('progress').hidden=false;$('progress').max=items.length;$('progress').value=0;
   for(let i=0;i<items.length;i++){
     const item=items[i];let img,canvas;status(`Обробка ${i+1} із ${items.length}: ${item.file.name}`);
@@ -87,6 +88,7 @@ $('convert').onclick = async () => {
       ctx.fillStyle=bg;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
       const {dw,dh}=geometry;
       ctx.drawImage(img,(canvas.width-dw)/2,(canvas.height-dh)/2,dw,dh);
+      applyTone(ctx,canvas.width,canvas.height,brightness,contrast);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));if(!blob||blob.type!=='image/jpeg')throw new Error('Не вдалося створити JPG');
       item.result=blob;item.w=canvas.width;item.h=canvas.height;item.name=`gotovo_${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
     }catch(error){item.error=error.message||'Не вдалося обробити фото';}
@@ -127,3 +129,55 @@ $('zip').onclick=async()=>{busy=true;controls();status('Готуємо ZIP-ар�
 // Close the settings dropdown when clicking outside or pressing Escape.
 document.addEventListener("click",e=>{const menu=document.querySelector(".settings-menu");if(menu.open&&!menu.contains(e.target))menu.open=false;});
 document.addEventListener("keydown",e=>{const menu=document.querySelector(".settings-menu");if(e.key==="Escape"&&menu.open){menu.open=false;menu.querySelector("summary").focus();}});
+
+// Use the same pixel transform for the preview and the exported JPG.
+function adjustPixels(data,brightness,contrast) {
+  const gain=1+brightness/100, factor=1+contrast/100;
+  for(let i=0;i<data.length;i+=4) {
+    for(let c=0;c<3;c++) data[i+c]=Math.max(0,Math.min(255,(data[i+c]*gain-128)*factor+128));
+  }
+}
+function applyTone(ctx,w,h,brightness,contrast) {
+  if(!brightness&&!contrast)return;
+  // Process strips to avoid a second full-size image allocation.
+  for(let y=0;y<h;y+=128){const height=Math.min(128,h-y),pixels=ctx.getImageData(0,y,w,height);adjustPixels(pixels.data,brightness,contrast);ctx.putImageData(pixels,0,y);}
+}
+let previewVersion=0,previewTimer,previewListKey='',previewImage=null,previewImageId=null;
+function syncPreviewFiles() {
+  const key=items.map(x=>x.id).join(',');
+  if(key!==previewListKey){
+    previewListKey=key;const selected=$('preview-file').value;$('preview-file').replaceChildren();
+    for(const item of items){const option=document.createElement('option');option.value=String(item.id);option.textContent=item.file.name;$('preview-file').append(option);}
+    if(items.some(x=>String(x.id)===selected))$('preview-file').value=selected;
+    if(!items.length){const option=document.createElement('option');option.textContent='Спочатку додайте фото';$('preview-file').append(option);}
+  }
+  $('preview-file').disabled=busy||!items.length;
+  if(!busy)schedulePreview();
+}
+function schedulePreview(){clearTimeout(previewTimer);const version=++previewVersion;previewTimer=setTimeout(()=>updatePreview(version),100);}
+async function updatePreview(version) {
+  const item=items.find(x=>String(x.id)===$('preview-file').value)||items[0];
+  if(!item){if(previewImage?.close)previewImage.close();previewImage=null;previewImageId=null;$('preview-before').hidden=true;$('preview-after').hidden=true;$('preview-status').textContent='Додайте фото, щоб побачити прев’ю.';return;}
+  try {
+    if(previewImageId!==item.id){
+      $('preview-status').textContent='Готуємо прев’ю…';const decoded=await decode(item.file);
+      if(version!==previewVersion){if(decoded.close)decoded.close();return;}
+      if(previewImage?.close)previewImage.close();previewImage=decoded;previewImageId=item.id;
+    }
+    if(version!==previewVersion)return;
+    const iw=previewImage.naturalWidth||previewImage.width,ih=previewImage.naturalHeight||previewImage.height;
+    const g=outputGeometry(iw,ih,Number($('width').value),Number($('height').value),$('mode').value,$('upscale').checked);
+    if(!Number.isFinite(g.width)||!Number.isFinite(g.height)||g.width<1||g.height<1)throw Error('Вкажіть коректний розмір.');
+    const scale=Math.min(1,600/Math.max(g.width,g.height));
+    for(const id of ['preview-before','preview-after']){
+      const canvas=$(id);canvas.width=Math.max(1,Math.round(g.width*scale));canvas.height=Math.max(1,Math.round(g.height*scale));
+      const ctx=canvas.getContext('2d');ctx.fillStyle=$('background').value;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingQuality='high';
+      ctx.drawImage(previewImage,(g.width-g.dw)*scale/2,(g.height-g.dh)*scale/2,g.dw*scale,g.dh*scale);
+      if(id==='preview-after')applyTone(ctx,canvas.width,canvas.height,Number($('brightness').value),Number($('contrast').value));canvas.hidden=false;
+    }
+    $('preview-status').textContent=`Результат: ${g.width} × ${g.height} px. Корекція застосовується до всієї партії.`;
+  }catch(error){if(version===previewVersion){$('preview-before').hidden=true;$('preview-after').hidden=true;$('preview-status').textContent=error.message||'Прев’ю недоступне для цього файлу.';}}
+}
+for(const id of ['brightness','contrast'])$(id).addEventListener('input',()=>{$(id+'-value').value=(Number($(id).value)>0?'+':'')+$(id).value;});
+$('preview-file').addEventListener('change',schedulePreview);
+$('reset-tone').onclick=()=>{for(const id of ['brightness','contrast']){$(id).value=0;$(id+'-value').value='0';}invalidate();};
