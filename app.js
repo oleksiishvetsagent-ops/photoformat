@@ -31,7 +31,7 @@ function controls() {
   $('quick-folder').disabled = busy;
   $('convert').disabled = busy || !items.length; $('clear').disabled = busy || !items.length;
   $('zip').hidden = !items.some(x => x.result);
-  $('convert-label').textContent = busy ? 'Обробляємо та готуємо завантаження…' : 'Обробити й завантажити фото';
+  $('convert-label').textContent = busy ? 'Обробляємо та зберігаємо…' : 'Обрати папку й зберегти фото';
   $('zip').disabled = busy || !items.some(x => x.result); $('settings').disabled = busy;
   $('files').disabled = busy; $('drop').setAttribute('aria-disabled', String(busy));
 }
@@ -57,7 +57,7 @@ function add(files) {
   for (const file of files) {
     items.push({id:++serial, file, preview:URL.createObjectURL(file)});
   }
-  $('files').value = ''; render(); status('Натисніть кнопку — готові JPG завантажаться одним ZIP-архівом.');
+  $('files').value = ''; render(); status('Натисніть кнопку, виберіть папку — готові JPG збережуться в ній окремими файлами.');
 }
 $('files').onchange = e => add(e.target.files);
 $('drop').onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && !busy) { e.preventDefault(); $('files').click(); } };
@@ -94,30 +94,47 @@ async function decode(file) {
   if ('createImageBitmap' in window) { try { return await createImageBitmap(file); } catch {} }
   return new Promise((resolve,reject)=>{const img=new Image();const url=URL.createObjectURL(file);img.onload=()=>{URL.revokeObjectURL(url);resolve(img);};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Формат не підтримується браузером або файл пошкоджений'));};img.src=url;});
 }
+async function saveManualPhoto(dir,item,settings,encode=encodePhoto) {
+  const result=await encode(item.file,settings);
+  const base=item.file.name.replace(/\.[^.]+$/,'').replace(/^gotovo_/i,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)||'photo';
+  const names=new Set();for await(const entry of dir.values())names.add(entry.name.toLowerCase());
+  let name=`gotovo_${base}.jpg`,suffix=2;
+  while(names.has(name.toLowerCase()))name=`gotovo_${base}_${suffix++}.jpg`;
+  // Recheck before creating: existing files must never be overwritten.
+  try{await dir.getFileHandle(name);throw Error('Файл із такою назвою щойно з’явився. Спробуйте ще раз.');}
+  catch(e){if(e.name!=='NotFoundError')throw e;}
+  const target=await dir.getFileHandle(name,{create:true});
+  let writer;
+  try{
+    writer=await target.createWritable();await writer.write(result.blob);await writer.close();writer=null;
+    if((await target.getFile()).size!==result.blob.size)throw Error('Не вдалося перевірити записаний JPG.');
+  }catch(e){if(writer){try{await writer.abort();}catch{}}throw e;}
+  return {...result,name};
+}
 $('convert').onclick = async () => {
   if(busy || !items.length) return;
+  if(!('showDirectoryPicker' in window)){status('Для збереження JPG у вибрану папку відкрийте сайт у Chrome або Edge на комп’ютері.');return;}
   let settings;try{settings=readSettings();}catch(error){status(error.message);return;}
-  busy=true;items.forEach(x=>{x.result=null;x.error=null;});render();$('progress').hidden=false;$('progress').max=items.length;$('progress').value=0;
-  for(let i=0;i<items.length;i++){
-    const item=items[i];status(`Обробка ${i+1} із ${items.length}: ${item.file.name}`);
-    try{
-      const result=await encodePhoto(item.file,settings);const blob=result.blob;
-      item.result=blob;item.w=result.width;item.h=result.height;item.name=`gotovo_${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
-    }catch(error){item.error=error.message||'Не вдалося обробити фото';}
-    $('progress').value=i+1;render();await new Promise(resolve=>setTimeout(resolve,0));
-  }
-  const done=items.filter(x=>x.result).length;
-  try {
-    if(done){
-      status('Фото готові. Готуємо ZIP-архів…');
-      const zip=await makeZip(items.filter(x=>x.result));
-      save(zip,'photoformat-jpg.zip');
-      status(`Готово: ${done} із ${items.length}. ZIP передано браузеру для завантаження.${done<items.length?' Деякі файли не вдалося обробити.':''} Якщо завантаження не почалося, натисніть «Завантажити ZIP ще раз».`);
-    } else status('Не вдалося обробити жодного фото. Перевірте повідомлення біля файлів.');
-  } catch(error) { status(`Фото оброблено, але не вдалося завантажити ZIP: ${error.message || 'спробуйте ще раз'}. Можна завантажити JPG окремо.`); }
-  finally {busy=false;render();}
-
+  let dir;
+  try{
+    const picker=window.showDirectoryPicker({mode:'readwrite',id:'photoformat-output'});
+    busy=true;controls();dir=await picker;
+  }catch(error){busy=false;controls();status(error.name==='AbortError'?'Вибір папки скасовано. Фото залишилися у списку.':`Не вдалося відкрити папку: ${error.message}`);return;}
+  let done=0;
+  try{
+    items.forEach(x=>{x.result=null;x.error=null;});render();$('progress').hidden=false;$('progress').max=items.length;$('progress').value=0;
+    for(let i=0;i<items.length;i++){
+      const item=items[i];status(`Зберігаємо ${i+1} із ${items.length} у «${dir.name}»: ${item.file.name}`);
+      try{
+        const result=await saveManualPhoto(dir,item,settings);
+        item.result=result.blob;item.w=result.width;item.h=result.height;item.name=result.name;done++;
+      }catch(error){item.error=error.message||'Не вдалося обробити або зберегти фото';}
+      $('progress').value=i+1;render();await new Promise(resolve=>setTimeout(resolve,0));
+    }
+    status(`Збережено ${done} із ${items.length} фото у папку «${dir.name}». Оригінали залишилися без змін.${done<items.length?' Перевірте повідомлення біля файлів.':''}`);
+  }finally{busy=false;render();}
 };
+
 function save(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 // ZIP store format: JPEG is already compressed. UTF-8 filenames, CRC32 and central directory.
 const crcTable=Array.from({length:256},(_,n)=>{for(let k=0;k<8;k++)n=n&1?0xedb88320^(n>>>1):n>>>1;return n>>>0;});
