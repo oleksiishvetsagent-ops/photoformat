@@ -11,7 +11,7 @@ function folderUpdate(){
   $('folder-close').disabled=folderRunning;
   for(const entry of folderEntries)entry.checkbox.disabled=folderRunning||folderFinished;
 }
-function outputFileName(name){return /\.jpg$/i.test(name)?name:name.replace(/\.[^.]+$/,'')+'.jpg';}
+function outputFileName(name){const base=name.replace(/\.[^.]+$/,'');return (/^gotovo_/i.test(base)?base:'gotovo_'+base)+'.jpg';}
 async function getExistingFile(dir,name){try{return await dir.getFileHandle(name);}catch(e){if(e.name==='NotFoundError')return null;throw e;}}
 async function writeVerified(handle,blob){
   let writer;
@@ -89,9 +89,9 @@ $('folder-run').onclick=async()=>{
   let completed=0,failed=0,warnings=0,processed=0,backupPath='';
   try{
     if(await permission!=='granted')throw Error('Дозвіл на запис у папку не надано. Жодне фото не змінено.');
-    const root=await folderHandle.getDirectoryHandle('_photoformat_originals',{create:true});
+    const root=await folderHandle.getDirectoryHandle('Необроблені оригінали',{create:true});
     const runName=new Date().toISOString().replace(/[:.]/g,'-')+'-'+crypto.randomUUID().slice(0,8);
-    const backup=await root.getDirectoryHandle(runName,{create:true});backupPath=`_photoformat_originals/${runName}`;
+    const backup=await root.getDirectoryHandle(runName,{create:true});backupPath=`Необроблені оригінали/${runName}`;
     // Colliding source names must not compete for the same destination.
     const destinations=new Map();
     for(const entry of selected){const key=outputFileName(entry.name).toLocaleLowerCase();destinations.set(key,(destinations.get(key)||0)+1);}
