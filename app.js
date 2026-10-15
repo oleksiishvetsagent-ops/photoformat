@@ -1,9 +1,34 @@
 'use strict';
+function readSettings(){
+  const w=Number($('width').value),h=Number($('height').value);
+  if($('mode').value!=='minimum'&&(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000))throw new Error('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');
+  const mode=$('mode').value,quality=Number($('quality').value)/100,bg=$('background').value,upscale=$('upscale').checked;
+  const brightness=Number($('brightness').value),contrast=Number($('contrast').value),protectHighlights=Number($('protect-highlights').value)/100;
+  return {w,h,mode,quality,bg,upscale,brightness,contrast,protectHighlights};
+}
+async function encodePhoto(file,settings){
+  const {w,h,mode,quality,bg,upscale,brightness,contrast,protectHighlights}=settings;
+  let img,canvas;try{
+      img=await decode(file);const iw=img.naturalWidth||img.width,ih=img.naturalHeight||img.height;
+      if(!iw||!ih)throw new Error('Не вдалося прочитати розмір фото');
+      const geometry=outputGeometry(iw,ih,w,h,mode,upscale);
+      if(geometry.width>32767||geometry.height>32767||geometry.width*geometry.height>100000000)throw new Error('Фото завелике для браузера. Розміри не змінено; спробуйте ручний режим.');
+      canvas=document.createElement('canvas');canvas.width=geometry.width;canvas.height=geometry.height;
+      const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Недостатньо пам’яті для обробки');
+      ctx.fillStyle=bg;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+      const {dw,dh}=geometry;
+      ctx.drawImage(img,(canvas.width-dw)/2,(canvas.height-dh)/2,dw,dh);
+      applyTone(ctx,canvas.width,canvas.height,brightness,contrast,protectHighlights);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));if(!blob||blob.type!=='image/jpeg')throw new Error('Не вдалося створити JPG');
+  return {blob,width:canvas.width,height:canvas.height};
+  }finally{if(img?.close)img.close();if(canvas){canvas.width=1;canvas.height=1;}}
+}
 const $ = id => document.getElementById(id);
 let items = [], busy = false, serial = 0;
 const size = n => n < 1048576 ? `${Math.round(n / 1024)} КБ` : `${(n / 1048576).toFixed(1)} МБ`;
 function status(text) { $('status').textContent = text; }
 function controls() {
+  $('quick-folder').disabled = busy;
   $('convert').disabled = busy || !items.length; $('clear').disabled = busy || !items.length;
   $('zip').hidden = !items.some(x => x.result);
   $('convert-label').textContent = busy ? 'Обробляємо та готуємо завантаження…' : 'Обробити й завантажити фото';
@@ -71,28 +96,14 @@ async function decode(file) {
 }
 $('convert').onclick = async () => {
   if(busy || !items.length) return;
-  const w=Number($('width').value),h=Number($('height').value);
-  if($('mode').value!=='minimum'&&(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1||w>8192||h>8192||w*h>32000000)){status('Введіть цілі розміри від 1 до 8192 px, разом не більше 32 мегапікселів.');return;}
-  const mode=$('mode').value,quality=Number($('quality').value)/100,bg=$('background').value,upscale=$('upscale').checked;
-  const brightness=Number($('brightness').value),contrast=Number($('contrast').value),protectHighlights=Number($('protect-highlights').value)/100;
+  let settings;try{settings=readSettings();}catch(error){status(error.message);return;}
   busy=true;items.forEach(x=>{x.result=null;x.error=null;});render();$('progress').hidden=false;$('progress').max=items.length;$('progress').value=0;
   for(let i=0;i<items.length;i++){
-    const item=items[i];let img,canvas;status(`Обробка ${i+1} із ${items.length}: ${item.file.name}`);
+    const item=items[i];status(`Обробка ${i+1} із ${items.length}: ${item.file.name}`);
     try{
-      img=await decode(item.file);const iw=img.naturalWidth||img.width,ih=img.naturalHeight||img.height;
-      if(!iw||!ih)throw new Error('Не вдалося прочитати розмір фото');
-      const geometry=outputGeometry(iw,ih,w,h,mode,upscale);
-      if(geometry.width>32767||geometry.height>32767||geometry.width*geometry.height>100000000)throw new Error('Фото завелике для браузера. Розміри не змінено; спробуйте ручний режим.');
-      canvas=document.createElement('canvas');canvas.width=geometry.width;canvas.height=geometry.height;
-      const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Недостатньо пам’яті для обробки');
-      ctx.fillStyle=bg;ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
-      const {dw,dh}=geometry;
-      ctx.drawImage(img,(canvas.width-dw)/2,(canvas.height-dh)/2,dw,dh);
-      applyTone(ctx,canvas.width,canvas.height,brightness,contrast,protectHighlights);
-      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));if(!blob||blob.type!=='image/jpeg')throw new Error('Не вдалося створити JPG');
-      item.result=blob;item.w=canvas.width;item.h=canvas.height;item.name=`gotovo_${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
+      const result=await encodePhoto(item.file,settings);const blob=result.blob;
+      item.result=blob;item.w=result.width;item.h=result.height;item.name=`gotovo_${String(i+1).padStart(3,'0')}_${item.file.name.replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').slice(0,100)}.jpg`;
     }catch(error){item.error=error.message||'Не вдалося обробити фото';}
-    finally{if(img?.close)img.close();if(canvas){canvas.width=1;canvas.height=1;}}
     $('progress').value=i+1;render();await new Promise(resolve=>setTimeout(resolve,0));
   }
   const done=items.filter(x=>x.result).length;
