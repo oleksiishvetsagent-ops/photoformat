@@ -29,6 +29,8 @@ const size = n => n < 1048576 ? `${Math.round(n / 1024)} КБ` : `${(n / 1048576
 function status(text) { $('status').textContent = text; }
 function controls() {
   $('quick-folder').disabled = busy;
+  $('brighten').disabled = busy;
+  for(const id of ['brightness','protect-highlights'])$(id).disabled=busy||$('brighten').checked;
   $('convert').disabled = busy || !items.length; $('clear').disabled = busy || !items.length;
   $('zip').hidden = !items.some(x => x.result);
   $('convert-label').textContent = busy ? 'Обробляємо та зберігаємо…' : 'Обрати папку й зберегти фото';
@@ -214,4 +216,19 @@ async function updatePreview(version) {
 for(const id of ['brightness','contrast'])$(id).addEventListener('input',()=>{$(id+'-value').value=(Number($(id).value)>0?'+':'')+$(id).value;});
 $('preview-file').addEventListener('change',schedulePreview);
 $('protect-highlights').addEventListener('input',()=>{$('protect-highlights-value').value=$('protect-highlights').value+'%';});
-$('reset-tone').onclick=()=>{$('protect-highlights').value=50;$('protect-highlights-value').value='50%';for(const id of ['brightness','contrast']){$(id).value=0;$(id+'-value').value='0';}invalidate();};
+$('reset-tone').onclick=()=>{$('brighten').checked=false;previousBrightenTone=null;$('protect-highlights').value=50;$('protect-highlights-value').value='50%';for(const id of ['brightness','contrast']){$(id).value=0;$(id+'-value').value='0';}invalidate();};
+
+// The preset uses the same slider values, settings reader and preview as both export paths.
+let previousBrightenTone=null;
+$('brighten').onchange=()=>{
+  if($('brighten').checked){
+    previousBrightenTone={brightness:$('brightness').value,protectHighlights:$('protect-highlights').value};
+    $('brightness').value=100;$('protect-highlights').value=100;
+  }else if(previousBrightenTone){
+    $('brightness').value=previousBrightenTone.brightness;$('protect-highlights').value=previousBrightenTone.protectHighlights;
+    previousBrightenTone=null;
+  }
+  $('brightness-value').value=(Number($('brightness').value)>0?'+':'')+$('brightness').value;
+  $('protect-highlights-value').value=$('protect-highlights').value+'%';
+  invalidate();
+};
